@@ -1,22 +1,74 @@
 "use client";
 
 import { useState } from "react";
-import { useChat } from "@ai-sdk/react";
+
+function getMessageText(m: any) {
+  if (typeof m.content === "string") return m.content;
+  if (typeof m.text === "string") return m.text;
+  return "";
+}
 
 export default function ChatPage() {
   const [text, setText] = useState("");
-
-  const { messages, sendMessage, status } = useChat();
-  const isLoading = status !== "ready";
+  const [messages, setMessages] = useState<any[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
-
     const trimmed = text.trim();
-    if (!trimmed || isLoading) return;
+    if (!trimmed) return;
 
     setText("");
-    await sendMessage({ text: trimmed });
+
+    // Add user message
+    const userMsg = { role: "user", id: Date.now().toString(), content: trimmed };
+    setMessages(prev => [...prev, userMsg]);
+    setIsLoading(true);
+
+    try {
+      // Fetch response from API
+      const response = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messages: [...messages, userMsg],
+        }),
+      });
+
+      if (!response.body) return;
+
+      let assistantText = "";
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value, { stream: true });
+        assistantText += chunk;
+
+        // Update assistant message in real-time
+        setMessages(prev => {
+          const lastMsg = prev[prev.length - 1];
+          if (lastMsg?.role === "assistant") {
+            return [
+              ...prev.slice(0, -1),
+              { ...lastMsg, content: assistantText },
+            ];
+          }
+          return [...prev, {
+            role: "assistant",
+            id: (Date.now() + 1).toString(),
+            content: assistantText,
+          }];
+        });
+      }
+    } catch (error) {
+      console.error("Error:", error);
+    } finally {
+      setIsLoading(false);
+    }
   }
 
   return (
@@ -40,18 +92,20 @@ export default function ChatPage() {
           ) : null}
 
           {messages.map((m: any) => {
-            const content = m.content ?? m.text ?? "";
+            const content = getMessageText(m);
             if (!content) return null;
+
+            const isUser = m.role === "user";
 
             return (
               <div
                 key={m.id}
-                className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}
+                className={`flex ${isUser ? "justify-end" : "justify-start"}`}
               >
                 <div
                   className={[
                     "max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed",
-                    m.role === "user"
+                    isUser
                       ? "bg-neutral-900 text-white"
                       : "bg-neutral-100 text-neutral-900",
                   ].join(" ")}
@@ -61,6 +115,7 @@ export default function ChatPage() {
               </div>
             );
           })}
+
 
           {isLoading ? (
             <div className="text-xs text-neutral-500">Thinking…</div>
