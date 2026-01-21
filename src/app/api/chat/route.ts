@@ -1,23 +1,34 @@
 export const runtime = "nodejs";
 
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export async function POST(req: Request) {
   const { messages } = await req.json();
 
-  // Return response in a format that useChat can parse
-  // The AI SDK expects text chunks separated by newlines
-  const text = `Got it. I'll keep this simple.\n\nIf you share your location, I can suggest 3 nearby food options and whether to walk or drive.\n\nNext step: I'll return a calm summary card with distances and food you might like.`;
-  
-  const textStream = new ReadableStream<string>({
+  const lastUser =
+    messages?.filter((m: any) => m.role === "user")?.at(-1)?.content ??
+    messages?.filter((m: any) => m.role === "user")?.at(-1)?.text ??
+    "";
+
+  const fullText =
+    `Got it. I’ll keep this simple.\n\n` +
+    `You said: "${lastUser}".\n\n` +
+    `If you share your location, I can suggest 3 nearby food options.\n\n` +
+    `Next step: I’ll return a calm summary card.`;
+
+  const stream = new ReadableStream({
     async start(controller) {
-      // Send the full text as a single chunk
-      controller.enqueue(text);
+      for (const word of fullText.split(" ")) {
+        controller.enqueue(new TextEncoder().encode(word + " "));
+        await sleep(35);
+      }
       controller.close();
     },
   });
 
-  return new Response(textStream, {
-    headers: {
-      "Content-Type": "text/plain; charset=utf-8",
-    },
+  return new Response(stream, {
+    headers: { "Content-Type": "text/plain; charset=utf-8" },
   });
 }

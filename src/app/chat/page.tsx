@@ -1,71 +1,114 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 
-function getMessageText(m: any) {
-  if (typeof m.content === "string") return m.content;
-  if (typeof m.text === "string") return m.text;
-  return "";
+/**
+ * A tiny helper to make ids (good enough for a demo).
+ * In real apps you might use crypto.randomUUID().
+ */
+function makeId() {
+  return Math.random().toString(36).slice(2);
 }
 
 export default function ChatPage() {
+  // What the user is typing
   const [text, setText] = useState("");
-  const [messages, setMessages] = useState<any[]>([]);
+
+  // Our chat history (user + assistant messages)
+  const [messages, setMessages] = useState<
+    { id: string; role: "user" | "assistant"; content: string }[]
+  >([]);
+
+  // Used to show "Thinking..." and disable the send button
   const [isLoading, setIsLoading] = useState(false);
+
+  /**
+   * AbortController lets us cancel an in-flight streaming response.
+   * Optional, but nice for reliability.
+   */
+  const abortRef = useRef<AbortController | null>(null);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
+
     const trimmed = text.trim();
-    if (!trimmed) return;
+    if (!trimmed || isLoading) return;
 
     setText("");
 
-    // Add user message
-    const userMsg = { role: "user", id: Date.now().toString(), content: trimmed };
-    setMessages(prev => [...prev, userMsg]);
+    // 1) Add the user message immediately
+    const userMsg = { id: makeId(), role: "user" as const, content: trimmed };
+
+    // IMPORTANT: compute nextMessages once to avoid stale state bugs
+    const nextMessages = [...messages, userMsg];
+    setMessages(nextMessages);
+
+    // 2) Create an empty assistant message we will stream into
+    const assistantId = makeId();
+    setMessages((prev) => [
+      ...prev,
+      { id: assistantId, role: "assistant", content: "" },
+    ]);
+
     setIsLoading(true);
 
+    // If there is an existing stream, cancel it before starting a new one
+    abortRef.current?.abort();
+    abortRef.current = new AbortController();
+
     try {
-      // Fetch response from API
+      // 3) Call the API route
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          messages: [...messages, userMsg],
-        }),
+        signal: abortRef.current.signal,
+        body: JSON.stringify({ messages: nextMessages }),
       });
 
-      if (!response.body) return;
+      if (!response.ok) {
+        throw new Error(`Request failed: ${response.status}`);
+      }
 
-      let assistantText = "";
+      // 4) Read the response body as a stream
+      if (!response.body) {
+        throw new Error("No response body (stream missing).");
+      }
+
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
 
+      let assistantText = "";
+
+      // 5) Read chunks until the server closes the stream
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
 
+        // Convert bytes -> text
         const chunk = decoder.decode(value, { stream: true });
         assistantText += chunk;
 
-        // Update assistant message in real-time
-        setMessages(prev => {
-          const lastMsg = prev[prev.length - 1];
-          if (lastMsg?.role === "assistant") {
-            return [
-              ...prev.slice(0, -1),
-              { ...lastMsg, content: assistantText },
-            ];
-          }
-          return [...prev, {
-            role: "assistant",
-            id: (Date.now() + 1).toString(),
-            content: assistantText,
-          }];
-        });
+        // 6) Update the assistant message in React state
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantId ? { ...m, content: assistantText } : m
+          )
+        );
       }
-    } catch (error) {
-      console.error("Error:", error);
+    } catch (err: any) {
+      // If the user cancelled, don't treat it as a "real" error
+      if (err?.name === "AbortError") return;
+
+      console.error(err);
+
+      // Show the error as an assistant message (simple UX)
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.role === "assistant" && m.content === ""
+            ? { ...m, content: "Something went wrong. Try again." }
+            : m
+        )
+      );
     } finally {
       setIsLoading(false);
     }
@@ -91,31 +134,25 @@ export default function ChatPage() {
             </div>
           ) : null}
 
-          {messages.map((m: any) => {
-            const content = getMessageText(m);
-            if (!content) return null;
-
-            const isUser = m.role === "user";
-
-            return (
+          {messages.map((m) => (
+            <div
+              key={m.id}
+              className={`flex ${
+                m.role === "user" ? "justify-end" : "justify-start"
+              }`}
+            >
               <div
-                key={m.id}
-                className={`flex ${isUser ? "justify-end" : "justify-start"}`}
+                className={[
+                  "max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed",
+                  m.role === "user"
+                    ? "bg-neutral-900 text-white"
+                    : "bg-neutral-100 text-neutral-900",
+                ].join(" ")}
               >
-                <div
-                  className={[
-                    "max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed",
-                    isUser
-                      ? "bg-neutral-900 text-white"
-                      : "bg-neutral-100 text-neutral-900",
-                  ].join(" ")}
-                >
-                  {content}
-                </div>
+                {m.content}
               </div>
-            );
-          })}
-
+            </div>
+          ))}
 
           {isLoading ? (
             <div className="text-xs text-neutral-500">Thinking…</div>
